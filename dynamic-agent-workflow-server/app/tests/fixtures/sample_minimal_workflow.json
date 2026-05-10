@@ -1,0 +1,63 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "name": "start",
+      "description": "Start of the workflow",
+      "position": { "x": 0, "y": 0 },
+      "data": {},
+      "config": {}
+    },
+    {
+      "id": "llm_1",
+      "type": "llm",
+      "name": "summarizer",
+      "position": { "x": 200, "y": 0 },
+      "config": {
+        "model_id": "mock-fast",
+        "messages": [
+          { "role": "system", "content": "You are concise." },
+          { "role": "user", "content": "{{system.userQuery}}" }
+        ],
+        "response_format": "text"
+      }
+    },
+    {
+      "id": "output_1",
+      "type": "output",
+      "name": "output",
+      "position": { "x": 400, "y": 0 },
+      "config": {
+        "outputMappings": {
+          "answer": "{{nodes.summarizer.result.content}}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-start-llm",
+      "source": "start",
+      "target": "llm_1",
+      "sourceHandle": "out",
+      "targetHandle": null
+    },
+    {
+      "id": "e-llm-output",
+      "source": "llm_1",
+      "target": "output_1",
+      "sourceHandle": "out",
+      "targetHandle": null,
+      "data": { "sourceType": "llm", "targetType": "output" }
+    }
+  ],
+  "interface": {
+    "inputs": {
+      "userQuery": { "type": "string", "required": true }
+    },
+    "outputs": {
+      "answer": { "type": "string" }
+    }
+  }
+}

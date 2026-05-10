@@ -1,0 +1,57 @@
+# Dynamic LLM model registry (loaded once at startup).
+#
+# Each entry maps a user-facing `id` (referenced from workflow JSON via
+# `node.config.model_id`) to a provider + that provider's actual model name +
+# the capabilities the model declares. The LLMService validates incoming
+# requests against `capabilities` and applies the JSON-mode fallback when
+# `json_mode` is absent.
+#
+# Provider names that are recognized by ProviderRegistry.from_settings:
+#   mock | openai | anthropic | ollama | vllm | huggingface
+#
+# Capabilities (well-known): chat, json_mode, tools, streaming
+#
+# Add or remove entries freely — no code change required.
+
+models:
+  # Always-on, deterministic, no external dependency. Default for tests/dev.
+  - id: mock-fast
+    provider: mock
+    model: mock
+    capabilities: [chat, json_mode, tools, streaming]
+    label: Mock (fast)
+    description: Deterministic local mock provider — used by tests and offline dev.
+
+  # OpenAI — requires OPENAI_API_KEY.
+  - id: gpt-4o
+    provider: openai
+    model: gpt-4o-2024-08-06
+    capabilities: [chat, json_mode, tools, streaming]
+    label: OpenAI GPT-4o
+  - id: gpt-4o-mini
+    provider: openai
+    model: gpt-4o-mini
+    capabilities: [chat, json_mode, tools, streaming]
+    label: OpenAI GPT-4o mini
+
+  # Anthropic — requires ANTHROPIC_API_KEY. Note: Anthropic's chat API does
+  # not have a native JSON-mode flag, so json_mode is absent and the
+  # LLMService will use its prompt-injection + parse fallback.
+  - id: claude-sonnet-4-6
+    provider: anthropic
+    model: claude-sonnet-4-6
+    capabilities: [chat, tools, streaming]
+    label: Anthropic Claude Sonnet 4.6
+  - id: claude-haiku-4-5
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+    capabilities: [chat, tools, streaming]
+    label: Anthropic Claude Haiku 4.5
+
+  # Open-source / local — no API key required.
+  - id: llama3-local
+    provider: ollama
+    model: llama3:8b
+    capabilities: [chat]
+    label: Llama 3 8B (Ollama)
+    description: Requires a local Ollama daemon at OLLAMA_BASE_URL (default http://localhost:11434).
