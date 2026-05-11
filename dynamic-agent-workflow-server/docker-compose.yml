@@ -1,0 +1,32 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: agent-workflow-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    restart: unless-stopped
+
+  # Optional: self-hosted Langfuse for tracing. Uncomment to use locally.
+  # See https://langfuse.com/docs/deployment/self-host for full setup.
+  #
+  # langfuse:
+  #   image: langfuse/langfuse:latest
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - DATABASE_URL=postgresql://postgres:postgres@langfuse-db:5432/postgres
+  #     - NEXTAUTH_SECRET=changeme
+  #     - SALT=changeme
+  #     - NEXTAUTH_URL=http://localhost:3000
+  #   depends_on:
+  #     - langfuse-db
+  #
+  # langfuse-db:
+  #   image: postgres:15
+  #   environment:
+  #     - POSTGRES_PASSWORD=postgres
+
+volumes:
+  mongo-data:

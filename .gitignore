@@ -1,0 +1,73 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# --- Virtualenvs ---
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- Build / dist ---
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+wheels/
+.eggs/
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# --- Type checkers ---
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# --- Env / secrets (NEVER commit) ---
+.env
+.env.*
+!.env.example
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs / runtime ---
+*.log
+logs/
+
+# --- Local dev artifacts ---
+*.sqlite
+*.sqlite3
+*.db
+
+# --- Claude Code / agent scratch ---
+.claude/
+claude-debug.log
+
+# --- Project-specific ---
+# Compiled-graph artifacts (we never write these to disk, but be defensive)
+*.compiled
+# Local Mongo data if someone bind-mounts it under the repo
+mongo-data/
