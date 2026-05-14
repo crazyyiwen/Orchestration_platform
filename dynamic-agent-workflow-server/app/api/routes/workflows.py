@@ -60,3 +60,32 @@ async def validate_runtime(workflow_id: str, request: Request) -> dict[str, Any]
     wf = await loader.load_by_id(workflow_id)
     report = validate(wf, allow_cycles=True, known_types=registered_types())
     return {"summary": wf.summary().model_dump(), "validation": report.model_dump()}
+
+
+@router.post("/api/workflows/register-inline")
+async def register_inline(body: InlinePayload, request: Request) -> dict[str, Any]:
+    """Register a workflow definition in the in-process inline cache.
+
+    Once registered, ``sub_flow`` nodes (in any other workflow) can launch
+    this workflow by its ``workflow_id`` without needing it in Mongo or the
+    metadata API. Idempotent: re-registering replaces the cached entry.
+    """
+    rm = _manager(request)
+    wf = WorkflowLoader.load_inline(
+        body.payload, workflow_id=body.workflow_id, version=body.version
+    )
+    report = validate(wf, allow_cycles=body.allow_cycles)
+    if not report.is_valid:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "workflow validation failed",
+                "errors": [i.model_dump() for i in report.errors],
+            },
+        )
+    rm.register_inline_workflow(wf)
+    return {
+        "summary": wf.summary().model_dump(),
+        "validation": report.model_dump(),
+        "registered": True,
+    }

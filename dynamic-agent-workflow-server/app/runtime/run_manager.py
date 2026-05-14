@@ -76,6 +76,16 @@ class RunManager:
     def event_bus(self) -> EventBus:
         return self._bus
 
+    def register_inline_workflow(self, definition: WorkflowDefinition) -> None:
+        """Pre-register a definition in the inline cache.
+
+        Use this to make a child workflow launchable by ``sub_flow`` nodes
+        without seeding it into Mongo. Useful for tests and demos.
+        """
+        self._inline_defs[
+            (definition.workflow_id, definition.workflow_version)
+        ] = definition
+
     async def create_run(
         self,
         *,
@@ -86,10 +96,28 @@ class RunManager:
         parent_run_id: str | None = None,
         depth: int = 0,
     ) -> dict[str, Any]:
-        """Validate the workflow and create a run row (status=pending)."""
-        definition = inline_definition or await self._loader.load_by_id(
-            workflow_id, version=version
-        )
+        """Validate the workflow and create a run row (status=pending).
+
+        Resolution order for the definition:
+          1. ``inline_definition`` argument (explicit).
+          2. In-process inline cache (so sub_flow nodes can launch children
+             registered earlier in the process).
+          3. Workflow loader (metadata API or local Mongo).
+        """
+        if inline_definition is not None:
+            definition = inline_definition
+        else:
+            cached = self._inline_defs.get((workflow_id, version or 1))
+            if cached is None and version is None:
+                # When no version specified, pick the highest cached version.
+                cached_versions = [
+                    v for (wid, v) in self._inline_defs if wid == workflow_id
+                ]
+                if cached_versions:
+                    cached = self._inline_defs[(workflow_id, max(cached_versions))]
+            definition = cached or await self._loader.load_by_id(
+                workflow_id, version=version
+            )
         report = validate(definition, allow_cycles=True)
         if not report.is_valid:
             raise ConfigurationError(
