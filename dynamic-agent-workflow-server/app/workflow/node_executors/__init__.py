@@ -11,6 +11,7 @@ from app.workflow.node_executors import (  # noqa: F401
     approval_node,
     external_agent_node,
     guardrail_node,
+    http_alias_node,
     http_request_node,
     human_input_node,
     llm_node,
@@ -19,6 +20,7 @@ from app.workflow.node_executors import (  # noqa: F401
     script_node,
     start_node,
     subflow_node,
+    ui_view_node,
     variable_update_node,
 )
 from app.workflow.node_executors.base import (  # noqa: F401

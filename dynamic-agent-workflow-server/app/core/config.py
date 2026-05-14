@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -21,7 +21,11 @@ class Settings(BaseSettings):
     APP_NAME: str = "dynamic-agent-workflow-server"
     APP_ENV: Literal["local", "dev", "staging", "prod"] = "local"
     API_PREFIX: str = "/api"
-    FRONTEND_ORIGINS: list[str] = Field(default_factory=lambda: ["*"])
+    # ``NoDecode`` tells pydantic-settings to NOT JSON-parse this field;
+    # the comma-split happens in the ``_split_origins`` validator below.
+    FRONTEND_ORIGINS: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["*"]
+    )
     LOG_LEVEL: str = "INFO"
 
     # --- MongoDB ---
