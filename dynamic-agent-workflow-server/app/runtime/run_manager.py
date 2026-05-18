@@ -7,6 +7,7 @@ in Phase 11 are thin wrappers around its public methods.
 from __future__ import annotations
 
 import asyncio
+import copy as _copy
 import logging
 import uuid
 from typing import Any
@@ -94,6 +95,7 @@ class RunManager:
         version: int | None = None,
         inline_definition: WorkflowDefinition | None = None,
         parent_run_id: str | None = None,
+        session_id: str | None = None,
         depth: int = 0,
     ) -> dict[str, Any]:
         """Validate the workflow and create a run row (status=pending).
@@ -103,6 +105,13 @@ class RunManager:
           2. In-process inline cache (so sub_flow nodes can launch children
              registered earlier in the process).
           3. Workflow loader (metadata API or local Mongo).
+
+        Session continuity: when ``session_id`` is given, the conversational
+        namespaces (``flow``, ``thread``) and ``system.conversationHistory``
+        from the most recent prior run in that session are seeded into the new
+        run's state — so a turn that fetched data can be followed by a turn
+        that summarizes it. Per-run namespaces (``nodes``, ``runtime``) and the
+        new turn's ``system`` input are NOT carried over.
         """
         if inline_definition is not None:
             definition = inline_definition
@@ -136,7 +145,38 @@ class RunManager:
             workflow_id=definition.workflow_id,
             workflow_version=definition.workflow_version,
         )
-        # Seed user inputs into ``system.*``.
+
+        # ---- Session continuity: rehydrate conversational state ----------
+        # Use the explicit session_id if given. Otherwise, when
+        # SESSION_CONTINUITY_DEFAULT is on, fall back to an implicit
+        # per-workflow session so single-user dev works without the client
+        # passing a session_id.
+        effective_session = session_id
+        if not effective_session and self._settings.SESSION_CONTINUITY_DEFAULT:
+            effective_session = f"__workflow__:{definition.workflow_id}"
+
+        if effective_session and self._runs is not None:
+            prior = await self._runs.latest_for_session(
+                definition.workflow_id, effective_session, exclude_run_id=run_id
+            )
+            if prior is not None:
+                prior_vars = (prior.get("state") or {}).get("variables") or {}
+                tgt = initial_state["variables"]
+                # Carry forward flow-/thread-scoped namespaces verbatim.
+                for ns in ("flow", "thread"):
+                    if isinstance(prior_vars.get(ns), dict):
+                        tgt[ns] = _copy.deepcopy(prior_vars[ns])
+                # Carry forward accumulated conversation history.
+                prior_hist = (prior_vars.get("system") or {}).get(
+                    "conversationHistory"
+                )
+                if prior_hist is not None:
+                    tgt.setdefault("system", {})["conversationHistory"] = (
+                        _copy.deepcopy(prior_hist)
+                    )
+
+        # Seed user inputs into ``system.*`` (overwrites any carried key with
+        # the new turn's value, e.g. system.userQuery).
         if input:
             initial_state["variables"]["system"].update(input)
 
@@ -147,6 +187,7 @@ class RunManager:
                 workflow_version=definition.workflow_version,
                 input=input or {},
                 parent_run_id=parent_run_id,
+                session_id=effective_session,
                 initial_state=initial_state,
             )
 

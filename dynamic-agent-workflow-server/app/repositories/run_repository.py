@@ -32,6 +32,7 @@ class RunRepository:
         input: dict[str, Any] | None = None,
         created_by: str | None = None,
         parent_run_id: str | None = None,
+        session_id: str | None = None,
         langfuse_trace_id: str | None = None,
         initial_state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -51,11 +52,35 @@ class RunRepository:
             "updated_at": now,
             "created_by": created_by,
             "parent_run_id": parent_run_id,
+            "session_id": session_id,
             "langfuse_trace_id": langfuse_trace_id,
             "event_seq": 0,
         }
         await self._c.insert_one(doc)
         return doc
+
+    async def latest_for_session(
+        self, workflow_id: str, session_id: str, *, exclude_run_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Most recent run for a (workflow_id, session_id), newest first.
+
+        Used to carry conversational ``flow``/``thread`` state from one turn
+        into the next. Prefers a completed run but falls back to the latest
+        of any status so a paused/failed prior turn still hands over its state.
+        """
+        query: dict[str, Any] = {
+            "workflow_id": workflow_id,
+            "session_id": session_id,
+        }
+        if exclude_run_id:
+            query["run_id"] = {"$ne": exclude_run_id}
+        # Prefer the latest completed turn.
+        doc = await self._c.find_one(
+            {**query, "status": "completed"}, sort=[("created_at", -1)]
+        )
+        if doc is not None:
+            return doc
+        return await self._c.find_one(query, sort=[("created_at", -1)])
 
     async def get(self, run_id: str) -> dict[str, Any] | None:
         return await self._c.find_one({"run_id": run_id})

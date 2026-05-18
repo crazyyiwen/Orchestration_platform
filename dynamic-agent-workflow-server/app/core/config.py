@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     HUGGINGFACE_API_KEY: str = ""
     DEFAULT_MODEL_ID: str = "mock-fast"
 
+    # When true and a run is created WITHOUT an explicit session_id, the run
+    # manager carries flow/thread state from the most recent completed run of
+    # the SAME workflow (an implicit per-workflow session). Convenient for
+    # single-user dev so multi-turn workflows work without the client sending
+    # a session_id. Leave FALSE in multi-user/production — it would otherwise
+    # bleed one conversation's state into another's.
+    SESSION_CONTINUITY_DEFAULT: bool = False
+
     # --- Runtime limits & gates ---
     ENABLE_SCRIPT_NODE: bool = False
     ALLOW_EXTERNAL_HTTP: bool = True

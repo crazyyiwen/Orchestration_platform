@@ -31,6 +31,8 @@ def _manager(request: Request) -> RunManager:
 class StartRunBody(BaseModel):
     input: dict[str, Any] | None = None
     version: int | None = None
+    # Pass a stable id per conversation to carry flow/thread state across turns.
+    session_id: str | None = None
 
 
 class InlineRunBody(BaseModel):
@@ -39,6 +41,7 @@ class InlineRunBody(BaseModel):
     payload: dict[str, Any]
     input: dict[str, Any] | None = None
     wait: bool = False
+    session_id: str | None = None
 
 
 class HumanInputBody(BaseModel):
@@ -57,7 +60,10 @@ class ApprovalBody(BaseModel):
 async def create_and_start(workflow_id: str, body: StartRunBody, request: Request) -> dict[str, Any]:
     rm = _manager(request)
     run = await rm.create_run(
-        workflow_id=workflow_id, input=body.input, version=body.version
+        workflow_id=workflow_id,
+        input=body.input,
+        version=body.version,
+        session_id=body.session_id,
     )
     await rm.start_run(
         run["run_id"],
@@ -75,7 +81,10 @@ async def run_inline(body: InlineRunBody, request: Request) -> dict[str, Any]:
         body.payload, workflow_id=body.workflow_id, version=body.version
     )
     run = await rm.create_run(
-        workflow_id=wf.workflow_id, input=body.input, inline_definition=wf
+        workflow_id=wf.workflow_id,
+        input=body.input,
+        inline_definition=wf,
+        session_id=body.session_id,
     )
     if body.wait:
         final = await rm.start_run(

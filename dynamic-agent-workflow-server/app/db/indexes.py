@@ -19,6 +19,11 @@ RUN_INDEXES: list[IndexModel] = [
     IndexModel([("status", ASCENDING)], name="status"),
     IndexModel([("created_at", DESCENDING)], name="created_at_desc"),
     IndexModel([("parent_run_id", ASCENDING)], name="parent_run_id_sparse", sparse=True),
+    IndexModel(
+        [("workflow_id", ASCENDING), ("session_id", ASCENDING), ("created_at", DESCENDING)],
+        name="workflow_session_recent",
+        sparse=True,
+    ),
 ]
 
 EVENT_INDEXES: list[IndexModel] = [
