@@ -59,9 +59,19 @@ class LLMNodeExecutor(BaseNodeExecutor):
         self, node: Node, state: dict[str, Any], ctx: ExecutionContext
     ) -> NodeExecutionResult:
         cfg = node.config or {}
-        model_id = cfg.get("model_id") or ctx.settings.DEFAULT_MODEL_ID
+        # Frontend uses ``config.model``; legacy uses ``model_id``.
+        requested_model = cfg.get("model_id") or cfg.get("model")
+        model_id = requested_model or ctx.settings.DEFAULT_MODEL_ID
         if not model_id:
             return _failed(node, "model_id is missing")
+        if not ctx.llm_service.models.has(model_id):
+            import logging as _lg
+
+            _lg.getLogger(__name__).warning(
+                "llm node %r: model %r not in registry; falling back to %r",
+                node.id, model_id, ctx.settings.DEFAULT_MODEL_ID,
+            )
+            model_id = ctx.settings.DEFAULT_MODEL_ID
 
         resolver = VariableResolver(state.get("variables", {}))
         try:
@@ -69,9 +79,25 @@ class LLMNodeExecutor(BaseNodeExecutor):
         except ValueError as e:
             return _failed(node, f"messages malformed: {e}")
 
+        # Frontend's ``config.instructions`` is the system prompt; if present
+        # and no system message was already provided, prepend it.
+        if cfg.get("instructions") and not any(m.role == "system" for m in messages):
+            from app.llm.types import Message as _Msg
+
+            messages.insert(
+                0, _Msg(role="system", content=resolver.resolve_string(cfg["instructions"]))
+            )
+
+        # If the workflow declares ``outputVariables`` (frontend structured-output
+        # schema), default response_format to json so the LLM emits a JSON doc.
+        response_format = cfg.get("response_format")
+        if not response_format and cfg.get("outputVariables"):
+            response_format = "json"
+        response_format = response_format or "text"
+
         request = LLMRequest(
             messages=messages,
-            response_format=cfg.get("response_format", "text"),
+            response_format=response_format,
             json_schema=cfg.get("json_schema"),
             temperature=cfg.get("temperature"),
             max_tokens=cfg.get("max_tokens"),
@@ -85,7 +111,7 @@ class LLMNodeExecutor(BaseNodeExecutor):
             return _failed(node, str(e), error_handle="error")
 
         # Spec §7: store provider, model, content, parsed_json, usage.
-        result_payload = {
+        envelope = {
             "provider": resp.provider,
             "model": resp.model,
             "content": resp.content,
@@ -95,6 +121,20 @@ class LLMNodeExecutor(BaseNodeExecutor):
             "usage": resp.usage.model_dump(),
             "finish_reason": resp.finish_reason,
         }
+
+        # Frontend structured-output contract: when the node declares
+        # ``outputVariables`` and the model produced a JSON object, the node's
+        # *result* IS that structured object. This makes the common pattern
+        #   stateUpdates: [{key: "flow.intentResult", value: "{{nodes.llm.result}}"}]
+        #   ... then {{flow.intentResult.aggregation}} downstream
+        # work exactly as the workflow author expects. The raw envelope stays
+        # available under ``result._llm`` for debugging / token accounting.
+        if cfg.get("outputVariables") and isinstance(resp.parsed_json, dict):
+            result_payload: dict[str, Any] = dict(resp.parsed_json)
+            result_payload["_llm"] = envelope
+        else:
+            result_payload = envelope
+
         return NodeExecutionResult(
             status="success",
             output=result_payload,
@@ -114,6 +154,8 @@ class LLMNodeExecutor(BaseNodeExecutor):
 
 
 def _resolve_messages(raw: list, resolver: VariableResolver) -> list[Message]:
+    import json as _json
+
     out: list[Message] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -123,10 +165,26 @@ def _resolve_messages(raw: list, resolver: VariableResolver) -> list[Message]:
         resolved_content = (
             resolver.resolve_string(content) if isinstance(content, str) else content
         )
+
+        # Frontend structured message input: when ``content`` is empty/blank
+        # the real text lives in a ``fields: [{label, value}]`` array. Build
+        # the message body as ``label: <resolved value>`` lines so the LLM
+        # receives the user's actual input.
+        fields = item.get("fields")
+        if (not resolved_content) and isinstance(fields, list) and fields:
+            lines: list[str] = []
+            for f in fields:
+                if not isinstance(f, dict):
+                    continue
+                label = f.get("label") or f.get("name") or ""
+                val = resolver.resolve_value(f.get("value"))
+                if not isinstance(val, str):
+                    val = _json.dumps(val, ensure_ascii=False)
+                lines.append(f"{label}: {val}" if label else val)
+            resolved_content = "\n".join(lines)
+
         if not isinstance(resolved_content, (str, type(None))):
             # Stringify non-string resolved content (e.g. lists/dicts) for safety.
-            import json as _json
-
             resolved_content = _json.dumps(resolved_content, ensure_ascii=False)
         out.append(
             Message(

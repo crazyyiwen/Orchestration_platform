@@ -55,3 +55,23 @@ models:
     capabilities: [chat]
     label: Llama 3 8B (Ollama)
     description: Requires a local Ollama daemon at OLLAMA_BASE_URL (default http://localhost:11434).
+
+  # ---- Display-name aliases used by the React Flow workflow builder ----
+  # The frontend writes friendly labels into the workflow's ``config.model``
+  # field. Mirror them as ids so the LLMService finds them.
+  #
+  # Routed to Anthropic Claude (the OpenAI key is rate-limited; the Anthropic
+  # key works). No ``json_mode`` capability is declared because Anthropic has
+  # no native JSON-mode flag — the LLMService automatically applies its
+  # prompt-injection + parse fallback, so structured-output LLM nodes and
+  # agent text-handoff (response_format=json) still work.
+  - id: "OpenAI GPT-5"
+    provider: anthropic
+    model: claude-sonnet-4-6
+    capabilities: [chat, tools, streaming]
+    label: "OpenAI GPT-5 (alias -> Claude Sonnet 4.6)"
+  - id: "OpenAI GPT-5 mini"
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+    capabilities: [chat, tools, streaming]
+    label: "OpenAI GPT-5 mini (alias -> Claude Haiku 4.5)"

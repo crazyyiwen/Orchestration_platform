@@ -38,7 +38,8 @@ from app.workflow.node_executors.base import (
     NodeExecutionResult,
     get_executor,
 )
-from app.workflow.state import merge_updates, set_path_inplace
+from app.workflow.state import get_path, merge_updates, set_path_inplace
+from app.workflow.variables import VariableResolver
 
 log = logging.getLogger(__name__)
 
@@ -186,6 +187,16 @@ def _make_node_runner(
         if new_vars is None:
             new_vars = _deepcopy(state.get("variables", {}))
         set_path_inplace(new_vars, f"nodes.{node.name}.result", _to_json_safe(result.output))
+
+        # Generic post-execution config.stateUpdates pass — mirrors the
+        # frontend executor's applyConfigStateUpdates. EVERY node may carry a
+        # "State Update" list ({key, value, operation}); each row resolves
+        # against the *current* variables (which now include this node's
+        # result, written just above) and writes to `key`. Honors
+        # `stateUpdatesRunOnlyWhen` (skip the list if it resolves falsy).
+        if result.status not in ("paused", "failed"):
+            _apply_config_state_updates(node, new_vars)
+
         delta["variables"] = new_vars
 
         delta["_next_handle"] = result.next_handle
@@ -238,6 +249,85 @@ def _merge_state_updates(state: dict[str, Any], updates: dict[str, Any]) -> dict
         else:
             out[k] = v
     return out
+
+
+def _apply_config_state_updates(node: Node, variables: dict[str, Any]) -> None:
+    """Apply a node's declarative ``config.stateUpdates`` list in place.
+
+    Mirrors the frontend executor's ``applyConfigStateUpdates``. Every
+    non-system node may carry a "State Update" section. Each row is
+    ``{key, value, operation}``:
+
+      * ``value`` is resolved against the *current* ``variables`` (which by
+        now include this node's own ``nodes.<name>.result``), so a row like
+        ``{key: "flow.intentResult", value: "{{nodes.llm.result}}"}`` works.
+      * ``key`` is a dotted path written into ``variables``.
+      * ``operation`` supports set / append / merge / increment / remove
+        (same semantics as the variable_update node).
+
+    The whole list is skipped when ``config.stateUpdatesRunOnlyWhen`` is
+    present and resolves falsy. Both ``stateUpdates`` and ``variableUpdates``
+    keys are honored (the Start node uses the latter).
+    """
+    cfg = node.config if isinstance(node.config, dict) else {}
+    rows = cfg.get("stateUpdates") or cfg.get("variableUpdates") or []
+    if not isinstance(rows, list) or not rows:
+        return
+
+    resolver = VariableResolver(variables)
+
+    gate = str(cfg.get("stateUpdatesRunOnlyWhen") or "").strip()
+    if gate:
+        if not resolver.resolve_value(gate):
+            return
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = row.get("key") or row.get("fieldName") or row.get("path")
+        if not key:
+            continue
+        key = str(key).strip().strip("{}").strip()
+        op = (row.get("operation") or "set").lower()
+        value = resolver.resolve_value(row.get("value"))
+
+        if op == "set":
+            set_path_inplace(variables, key, value)
+        elif op == "append":
+            existing = get_path(variables, key, default=None)
+            if not isinstance(existing, list):
+                existing = []
+            existing = list(existing)
+            existing.append(value)
+            set_path_inplace(variables, key, existing)
+        elif op == "merge":
+            existing = get_path(variables, key, default=None)
+            if isinstance(existing, dict) and isinstance(value, dict):
+                merged = {**existing, **value}
+            else:
+                merged = value if isinstance(value, dict) else {}
+            set_path_inplace(variables, key, merged)
+        elif op == "increment":
+            existing = get_path(variables, key, default=0) or 0
+            try:
+                set_path_inplace(variables, key, existing + (value or 1))
+            except TypeError:
+                set_path_inplace(variables, key, value)
+        elif op == "remove":
+            _delete_path(variables, key)
+        else:
+            set_path_inplace(variables, key, value)
+
+
+def _delete_path(target: dict[str, Any], path: str) -> None:
+    parts = path.split(".")
+    cur: Any = target
+    for p in parts[:-1]:
+        if not isinstance(cur, dict) or p not in cur:
+            return
+        cur = cur[p]
+    if isinstance(cur, dict):
+        cur.pop(parts[-1], None)
 
 
 def _make_event(

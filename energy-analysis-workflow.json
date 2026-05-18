@@ -1,0 +1,381 @@
+{
+  "id": "wf_ZtSB_v7Dd34",
+  "name": "energy_analysis_workflow",
+  "version": 23,
+  "nodes": [
+    {
+      "id": "node_dqfdpp4j",
+      "type": "dynamic",
+      "position": {
+        "x": -9.999999999999972,
+        "y": 163.33333333333334
+      },
+      "data": {
+        "name": "start",
+        "config": {},
+        "type": "start",
+        "description": "Starting point of the workflow.",
+        "inputs": {},
+        "outputs": {},
+        "advanced": {}
+      }
+    },
+    {
+      "id": "node_Wkpex16e",
+      "type": "dynamic",
+      "position": {
+        "x": 282.33901977539074,
+        "y": 163.33712259928387
+      },
+      "data": {
+        "name": "llm",
+        "config": {
+          "model": "OpenAI GPT-5 mini",
+          "instructions": "You are a data-query parameter extraction assistant.\n\nYour job is to read the user's request and extract query parameters into a strict JSON object.\n\nReturn ONLY valid JSON.\nDo not include markdown.\nDo not include explanation.\nDo not include extra keys.\n\nOutput JSON schema:\n\n{\n  \"aggregation\": \"string\",\n  \"start_date\": \"string\",\n  \"end_date\": \"string\",\n  \"metrics\": [\"string\"],\n  \"limit\": number\n}\n\nField rules:\n\n1. aggregation\n- Extract the time aggregation/granularity from the user input.\n- Valid values: \"hourly\", \"daily\", \"weekly\", \"monthly\".\n- If the user does not specify aggregation, use \"daily\".\n\n2. start_date\n- Extract the start date from the user input.\n- Format must be YYYY-MM-DD.\n- If the user does not provide a start date, return an empty string.\n\n3. end_date\n- Extract the end date from the user input.\n- Format must be YYYY-MM-DD.\n- If the user does not provide an end date, return an empty string.\n\n4. metrics\n- Extract all requested metrics.\n- Normalize common metric names:\n  - \"sum\", \"total\" → \"sum\"\n  - \"average\", \"avg\", \"mean\" → \"avg\"\n  - \"maximum\", \"max\", \"highest\" → \"max\"\n  - \"minimum\", \"min\", \"lowest\" → \"min\"\n  - \"count\", \"number of records\" → \"count\"\n- If no metric is specified, use [\"sum\"].\n\n5. limit\n- Extract the maximum number of records requested.\n- If the user says \"top 10\", \"limit 10\", or \"first 10\", use 10.\n- If no limit is specified, use 100.\n\nExamples:\n\nUser input:\n\"Show me daily sum, average and max from May 1 2026 to May 12 2026, limit 10\"\n\nOutput:\n{\n  \"aggregation\": \"daily\",\n  \"start_date\": \"2026-05-01\",\n  \"end_date\": \"2026-05-12\",\n  \"metrics\": [\"sum\", \"avg\", \"max\"],\n  \"limit\": 10\n}\n\nUser input:\n\"Get weekly total electricity usage for last month, top 20\"\n\nOutput:\n{\n  \"aggregation\": \"weekly\",\n  \"start_date\": \"\",\n  \"end_date\": \"\",\n  \"metrics\": [\"sum\"],\n  \"limit\": 20\n}\n\nNow extract parameters from the following user input:\n",
+          "messages": [
+            {
+              "id": "msg_NZXVeU",
+              "role": "user",
+              "content": "",
+              "fields": [
+                {
+                  "id": "inp_xHkHJv",
+                  "label": "userQuery",
+                  "value": "{{system.userQuery}}"
+                },
+                {
+                  "id": "inp_uJtw_a",
+                  "label": "conversationHistory",
+                  "value": "{{system.conversationHistory}}"
+                }
+              ]
+            }
+          ],
+          "userQuery": "{{system.userQuery}}",
+          "outputVariables": [
+            {
+              "id": "sch_fDPlIw",
+              "name": "aggregation",
+              "type": "string",
+              "required": false
+            },
+            {
+              "id": "sch_xVfZ2R",
+              "name": "start_date",
+              "type": "string",
+              "required": false
+            },
+            {
+              "id": "sch_MskzsE",
+              "name": "end_date",
+              "type": "string",
+              "required": false
+            },
+            {
+              "id": "sch_BsoefE",
+              "name": "metrics",
+              "type": "array",
+              "required": false
+            },
+            {
+              "id": "sch_Ve4AJl",
+              "name": "limit",
+              "type": "number",
+              "required": false
+            }
+          ],
+          "stateUpdates": [
+            {
+              "id": "map_M6us53",
+              "key": "flow.intentResult",
+              "type": "string",
+              "value": "{{nodes.llm.result}}",
+              "operation": "set"
+            }
+          ]
+        },
+        "type": "llm",
+        "description": "",
+        "inputs": {},
+        "outputs": {},
+        "advanced": {}
+      }
+    },
+    {
+      "id": "node_NDLevvgE",
+      "type": "dynamic",
+      "position": {
+        "x": 586.6993663795763,
+        "y": 162.00378926595053
+      },
+      "data": {
+        "name": "agent",
+        "config": {
+          "strategy": "ReAct",
+          "model": "OpenAI GPT-5",
+          "instructions": "You are an energy data orchestration agent.\n\nYour job is to decide which downstream tool/step should execute based on the user's request.\n\nAvailable tool routes:\n\n1. fetch_data\nUse this when the user wants to fetch, get, search, query, load, retrieve, check, or view energy data.\n\nExamples:\n- \"Get daily energy data from May 1 to May 12\"\n- \"Fetch energy usage data\"\n- \"Check the energy data first\"\n- \"Show me the raw energy data\"\n- \"Get sum, avg, max for the energy metrics\"\n\nWhen choosing this route, return:\n{\n  \"next_handle\": \"fetching_data\",\n  \"reason\": \"User wants to fetch or check energy data first.\"\n}\n\n2. summary\nUse this when the user wants to see the fetched result in a short/simple form, without deep analysis.\n\nExamples:\n- \"Show me the result\"\n- \"Summarize the fetched data\"\n- \"Give me a summary\"\n- \"What is the result?\"\n- \"Show the output\"\n\nWhen choosing this route, return:\n{\n  \"next_handle\": \"summary\",\n  \"reason\": \"User wants to see a summary of the fetched result.\"\n}\n\n3. final_report\nUse this when the user wants analysis, insight, explanation, conclusion, trend, comparison, or a final report based on the fetched data.\n\nExamples:\n- \"Analyze the energy data\"\n- \"Show me the analysis\"\n- \"Generate final report\"\n- \"What insights can you find?\"\n- \"Explain the trend\"\n- \"Compare the metrics and give conclusion\"\n\nWhen choosing this route, return:\n{\n  \"next_handle\": \"final_report\",\n  \"reason\": \"User wants an analysis or final report based on the fetched data.\"\n}\n\nExecution rules:\n\n- Read the user input carefully.\n- Select exactly one route.\n- Do not call multiple routes at the same time.\n- Do not invent data.\n- If the user asks to check or retrieve data first, choose fetch_data.\n- If the user asks to see the result after data was fetched, choose summary.\n- If the user asks for analysis, insights, trends, comparison, conclusion, or report, choose final_report.\n- If the user request is unclear, choose fetch_data first because data must be fetched before summary or analysis.\n- Return only valid JSON.\n- Do not include markdown.\n- Do not include explanation outside the JSON.\n- The JSON must contain only these fields:\n  - next_handle\n  - reason\n\nValid next_handle values:\n- fetching_data\n- summary\n- final_report",
+          "messages": [],
+          "userQuery": "{{system.userQuery}}",
+          "attachments": "{{system.attachments}}",
+          "tools": [],
+          "libraries": [],
+          "skills": [],
+          "widgets": [],
+          "handoffs": [
+            {
+              "id": "ho_UY1qU3",
+              "name": "fetching_data",
+              "description": ""
+            },
+            {
+              "id": "ho_Eo3hpl",
+              "name": "summary",
+              "description": ""
+            },
+            {
+              "id": "ho_0MnRGt",
+              "name": "final_report",
+              "description": ""
+            }
+          ]
+        },
+        "type": "agent",
+        "description": "",
+        "inputs": {},
+        "outputs": {},
+        "advanced": {}
+      }
+    },
+    {
+      "id": "node_W0UEsWDG",
+      "type": "dynamic",
+      "position": {
+        "x": 1302.8600016123821,
+        "y": 155.56678490482977
+      },
+      "data": {
+        "name": "output",
+        "config": {
+          "renderImages": false,
+          "mappings": []
+        },
+        "type": "output",
+        "description": "",
+        "inputs": {},
+        "outputs": {},
+        "advanced": {}
+      }
+    },
+    {
+      "id": "node_L1sEFQyk",
+      "type": "dynamic",
+      "position": {
+        "x": 925.369270247429,
+        "y": 423.2575094133506
+      },
+      "data": {
+        "name": "summary",
+        "config": {
+          "html": "<div style=\"padding: 16px; font-family: ui-sans-serif, system-ui, sans-serif; color: #0f172a;\">\n  <h2 style=\"margin: 0 0 8px; font-size: 18px; font-weight: 600;\">Result</h2>\n  <p style=\"margin: 0; color: #475569;\">You asked: <strong>{{system.userQuery}}</strong></p>\n</div>",
+          "sanitize": true
+        },
+        "type": "uiView",
+        "description": "",
+        "inputs": {},
+        "outputs": {},
+        "advanced": {}
+      }
+    },
+    {
+      "id": "node_4s9Rdz9O",
+      "type": "dynamic",
+      "position": {
+        "x": 926.4729412752164,
+        "y": 547.9723355533331
+      },
+      "data": {
+        "name": "final_report",
+        "config": {
+          "html": "<div style=\"padding: 16px; font-family: ui-sans-serif, system-ui, sans-serif; color: #0f172a;\">\n  <h2 style=\"margin: 0 0 8px; font-size: 18px; font-weight: 600;\">Result</h2>\n  <p style=\"margin: 0; color: #475569;\">You asked: <strong>{{system.userQuery}}</strong></p>\n</div>",
+          "sanitize": true
+        },
+        "type": "uiView",
+        "description": "",
+        "inputs": {},
+        "outputs": {},
+        "advanced": {}
+      }
+    },
+    {
+      "id": "node_cbpTOxhK",
+      "type": "dynamic",
+      "position": {
+        "x": 919.672353108724,
+        "y": 307.3371225992838
+      },
+      "data": {
+        "name": "fetch_data",
+        "config": {
+          "method": "GET",
+          "url": "http://localhost:5500/api/tools/query_energy_data",
+          "headers": [],
+          "query": [],
+          "body": [
+            {
+              "id": "param_ULJjGM",
+              "name": "aggregation",
+              "type": "string",
+              "description": "",
+              "required": false,
+              "value": "{{flow.intentResult.aggregation}}"
+            },
+            {
+              "id": "param_zhpHUR",
+              "name": "start_date",
+              "type": "string",
+              "description": "",
+              "required": false,
+              "value": "{{flow.intentResult.start_date}}"
+            },
+            {
+              "id": "param_WIXUFu",
+              "name": "end_date",
+              "type": "string",
+              "description": "",
+              "required": false,
+              "value": "{{flow.intentResult.end_date}}"
+            },
+            {
+              "id": "param_30Ffbn",
+              "name": "metrics",
+              "type": "array",
+              "description": "",
+              "required": false,
+              "value": "[\"sum\",\"avg\",\"max\"]"
+            },
+            {
+              "id": "param_vqUvv_",
+              "name": "limit",
+              "type": "number",
+              "description": "",
+              "required": false,
+              "value": "{{flow.intentResult.limit}}"
+            }
+          ],
+          "auth": {
+            "type": "none",
+            "token": ""
+          },
+          "stateUpdates": [
+            {
+              "id": "map_7g_hV6",
+              "key": "flow.fetchDataResult",
+              "type": "string",
+              "value": "{{nodes.fetch_data.result}}",
+              "operation": "set"
+            }
+          ],
+          "stateUpdatesRunOnlyWhen": ""
+        },
+        "type": "http",
+        "description": "",
+        "inputs": {},
+        "outputs": {},
+        "advanced": {}
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_vav_XrBs",
+      "source": "node_dqfdpp4j",
+      "target": "node_Wkpex16e",
+      "sourceHandle": "out",
+      "targetHandle": "in"
+    },
+    {
+      "id": "edge_3nCG2nGx",
+      "source": "node_Wkpex16e",
+      "target": "node_NDLevvgE",
+      "sourceHandle": "out",
+      "targetHandle": "in"
+    },
+    {
+      "id": "edge_xkXZhx4Z",
+      "source": "node_NDLevvgE",
+      "target": "node_W0UEsWDG",
+      "sourceHandle": "out",
+      "targetHandle": "in"
+    },
+    {
+      "id": "edge_AgvOUEMI",
+      "source": "node_NDLevvgE",
+      "target": "node_L1sEFQyk",
+      "sourceHandle": "ho_Eo3hpl",
+      "targetHandle": "in"
+    },
+    {
+      "id": "edge_q3jg_BGM",
+      "source": "node_NDLevvgE",
+      "target": "node_4s9Rdz9O",
+      "sourceHandle": "ho_0MnRGt",
+      "targetHandle": "in"
+    },
+    {
+      "id": "edge_OdP-Wt0h",
+      "source": "node_L1sEFQyk",
+      "target": "node_W0UEsWDG",
+      "sourceHandle": "out",
+      "targetHandle": "in"
+    },
+    {
+      "id": "edge_K8VRHUe3",
+      "source": "node_4s9Rdz9O",
+      "target": "node_W0UEsWDG",
+      "sourceHandle": "out",
+      "targetHandle": "in"
+    },
+    {
+      "id": "edge_nZmAyLwT",
+      "source": "node_NDLevvgE",
+      "target": "node_cbpTOxhK",
+      "sourceHandle": "ho_UY1qU3",
+      "targetHandle": "in"
+    },
+    {
+      "id": "edge_SAzIG7ZY",
+      "source": "node_cbpTOxhK",
+      "target": "node_W0UEsWDG",
+      "sourceHandle": "out",
+      "targetHandle": "in"
+    }
+  ],
+  "variables": {
+    "system": {
+      "userQuery": "",
+      "attachments": [],
+      "files": [],
+      "humanInput": ""
+    },
+    "runtime": {
+      "workflowMetaData": {
+        "workflowId": "",
+        "agentName": ""
+      }
+    }
+  },
+  "flowVariables": [
+    {
+      "id": "fv_FPwM_ag2",
+      "name": "fetchDataResult",
+      "description": "",
+      "type": "string"
+    },
+    {
+      "id": "fv_fssKDBhl",
+      "name": "intentResult",
+      "description": "",
+      "type": "object"
+    }
+  ]
+}

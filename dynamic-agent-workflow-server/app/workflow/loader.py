@@ -137,6 +137,7 @@ class WorkflowLoader:
                 "is unavailable)"
             )
         payload = await source.fetch(workflow_id, version)
+        # Can be optimized in the future
         return self.load_inline(payload, workflow_id=workflow_id, version=version)
 
     @staticmethod
@@ -160,8 +161,14 @@ def _normalize(
         raise CompilationError("workflow payload must be a JSON object")
 
     definition_dict, meta = _extract_definition(payload)
+    # Flatten React Flow's ``type: "dynamic"`` node wrappers before validation.
+    definition_dict = _normalize_react_flow_nodes(definition_dict)
 
     merged: dict[str, Any] = dict(definition_dict)
+    # The metadata API's `doc` carries the workflow id under ``id``, not
+    # ``workflow_id`` — promote it so the schema validator finds it.
+    if "workflow_id" not in merged and merged.get("id"):
+        merged["workflow_id"] = merged["id"]
     # Apply metadata wrappers without overwriting fields already in the definition.
     if "workflow_id" not in merged:
         merged["workflow_id"] = (
@@ -202,7 +209,12 @@ def _normalize(
 def _extract_definition(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return (definition_dict, wrapper_metadata).
 
-    Tolerates three shapes commonly returned by metadata APIs.
+    Tolerates four wrapper shapes commonly returned by metadata APIs:
+      1. bare:        ``{nodes, edges, ...}``
+      2. definition:  ``{definition: {...}, workflow_id, version, name}``
+      3. workflow:    ``{workflow: {...}, ...}``
+      4. meta+doc:    ``{meta: {workflow_id, current_version, ...}, doc: {...}}``
+         (the FastAPI metadata-API project on port 8000 uses this)
     """
     if "nodes" in payload and "edges" in payload:
         return payload, {}
@@ -212,6 +224,50 @@ def _extract_definition(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
     if isinstance(payload.get("workflow"), dict):
         meta = {k: v for k, v in payload.items() if k != "workflow"}
         return payload["workflow"], meta
+    if isinstance(payload.get("doc"), dict) and "doc" in payload:
+        # The metadata API's response shape. ``meta.current_version`` is the
+        # latest published version; the definition's own ``version`` may lag.
+        # We promote ``current_version`` to the meta dict so it takes precedence.
+        raw_meta = payload.get("meta") or {}
+        meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+        if "workflow_version" not in meta and meta.get("current_version") is not None:
+            meta["workflow_version"] = meta["current_version"]
+        return payload["doc"], meta
     raise CompilationError(
-        "workflow payload missing 'nodes'/'edges' (or a 'definition'/'workflow' wrapper)"
+        "workflow payload missing 'nodes'/'edges' "
+        "(or a 'definition'/'workflow'/'doc' wrapper)"
     )
+
+
+def _normalize_react_flow_nodes(definition: dict[str, Any]) -> dict[str, Any]:
+    """Hoist React Flow node wrappers (``type: "dynamic"`` + ``data.*``).
+
+    The frontend builder emits nodes with the actual type/name/config nested
+    under ``data``. The runtime needs them flat. This is a pure transformation
+    — nodes that are already flat are left alone.
+    """
+    nodes = definition.get("nodes")
+    if not isinstance(nodes, list):
+        return definition
+    new_nodes: list[dict[str, Any]] = []
+    for n in nodes:
+        if not isinstance(n, dict):
+            new_nodes.append(n)
+            continue
+        data = n.get("data")
+        is_wrapped = (
+            isinstance(data, dict)
+            and data.get("type")
+            and data.get("name")
+        )
+        if not is_wrapped:
+            new_nodes.append(n)
+            continue
+        flat = dict(n)
+        flat["type"] = data["type"]
+        flat["name"] = data["name"]
+        flat["config"] = data.get("config") or n.get("config") or {}
+        if data.get("description") and not flat.get("description"):
+            flat["description"] = data["description"]
+        new_nodes.append(flat)
+    return {**definition, "nodes": new_nodes}

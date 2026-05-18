@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # --- App ---
     APP_NAME: str = "dynamic-agent-workflow-server"
     APP_ENV: Literal["local", "dev", "staging", "prod"] = "local"
+    API_HOST: str = "127.0.0.1"
+    API_PORT: int = 8000
     API_PREFIX: str = "/api"
     # ``NoDecode`` tells pydantic-settings to NOT JSON-parse this field;
     # the comma-split happens in the ``_split_origins`` validator below.
@@ -33,11 +35,11 @@ class Settings(BaseSettings):
     MONGODB_DATABASE: str = "agent_workflow_runtime"
 
     # --- Metadata API (optional source for workflow definitions) ---
-    METADATA_API_ENABLED: bool = False
-    METADATA_API_BASE_URL: str = "http://localhost:8001"
+    METADATA_API_ENABLED: bool = True
+    METADATA_API_BASE_URL: str = "http://localhost:8000"
 
     # --- Langfuse ---
-    LANGFUSE_ENABLED: bool = False
+    LANGFUSE_ENABLED: bool = True
     LANGFUSE_PUBLIC_KEY: str = ""
     LANGFUSE_SECRET_KEY: str = ""
     LANGFUSE_HOST: str = "https://cloud.langfuse.com"
