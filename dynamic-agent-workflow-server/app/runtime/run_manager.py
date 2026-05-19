@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy as _copy
+import json
 import logging
 import uuid
 from typing import Any
@@ -70,6 +71,12 @@ class RunManager:
         # ``(workflow_id, version)``. Lets resume work for inline workflows
         # that aren't in the metadata API / local Mongo.
         self._inline_defs: dict[tuple[str, int], WorkflowDefinition] = {}
+        # Active conversational session per workflow: workflow_id -> session_id.
+        # Created on the first run with no explicit session_id (when
+        # SESSION_CONTINUITY_DEFAULT is on), reused for every subsequent run,
+        # and cleared by end_session() — the "stop signal" — so the next run
+        # starts a fresh conversation.
+        self._active_sessions: dict[str, str] = {}
 
     # ----- public API -----------------------------------------------------
 
@@ -96,6 +103,7 @@ class RunManager:
         inline_definition: WorkflowDefinition | None = None,
         parent_run_id: str | None = None,
         session_id: str | None = None,
+        implicit_session: bool = True,
         depth: int = 0,
     ) -> dict[str, Any]:
         """Validate the workflow and create a run row (status=pending).
@@ -146,14 +154,34 @@ class RunManager:
             workflow_version=definition.workflow_version,
         )
 
-        # ---- Session continuity: rehydrate conversational state ----------
-        # Use the explicit session_id if given. Otherwise, when
-        # SESSION_CONTINUITY_DEFAULT is on, fall back to an implicit
-        # per-workflow session so single-user dev works without the client
-        # passing a session_id.
-        effective_session = session_id
-        if not effective_session and self._settings.SESSION_CONTINUITY_DEFAULT:
-            effective_session = f"__workflow__:{definition.workflow_id}"
+        # ---- Session resolution -----------------------------------------
+        # Precedence for the session this run belongs to:
+        #   1. explicit ``session_id`` arg  -> use it verbatim, never mint a
+        #      new one. The client owns the conversation; resending the same
+        #      id across turns rehydrates flow/thread state (continuity).
+        #   2. no session_id, sub-flow run   -> no session (isolated).
+        #   3. no session_id, SESSION_CONTINUITY_DEFAULT on -> reuse the
+        #      backend-managed per-workflow session (legacy dev convenience,
+        #      rotated by end_session()).
+        #   4. no session_id otherwise       -> mint a NEW unique session and
+        #      return it; the client should echo it back on later turns to
+        #      keep the conversation going.
+        if session_id:
+            effective_session = session_id
+        elif not implicit_session:
+            # Sub-flow run: a child workflow never joins a chat session.
+            effective_session = None
+        elif self._settings.SESSION_CONTINUITY_DEFAULT:
+            effective_session = self._get_or_create_session(
+                definition.workflow_id
+            )
+        else:
+            effective_session = f"sess-{uuid.uuid4().hex}"
+            log.info(
+                "session minted workflow=%s session_id=%s",
+                definition.workflow_id,
+                effective_session,
+            )
 
         if effective_session and self._runs is not None:
             prior = await self._runs.latest_for_session(
@@ -191,7 +219,13 @@ class RunManager:
                 initial_state=initial_state,
             )
 
-        return {"run_id": run_id, "definition": definition, "state": initial_state, "depth": depth}
+        return {
+            "run_id": run_id,
+            "definition": definition,
+            "state": initial_state,
+            "depth": depth,
+            "session_id": effective_session,
+        }
 
     async def start_run(
         self,
@@ -344,6 +378,57 @@ class RunManager:
             return None
         return await self._runs.get(run_id)
 
+    # ----- session lifecycle ---------------------------------------------
+
+    def _get_or_create_session(self, workflow_id: str) -> str:
+        """Return the active session for a workflow, creating one if absent.
+
+        Called when a run starts without an explicit session_id and implicit
+        continuity is enabled. The id is a fresh uuid the first time, then
+        reused for every subsequent run until ``end_session`` rotates it.
+        """
+        sid = self._active_sessions.get(workflow_id)
+        if sid is None:
+            sid = f"sess-{uuid.uuid4().hex}"
+            self._active_sessions[workflow_id] = sid
+            log.info("session started workflow=%s session_id=%s", workflow_id, sid)
+        return sid
+
+    def active_session(self, workflow_id: str) -> str | None:
+        """The current backend-managed session for a workflow (or None)."""
+        return self._active_sessions.get(workflow_id)
+
+    def end_session(self, workflow_id: str) -> str | None:
+        """The "stop signal": clear the active session for a workflow.
+
+        The conversation's state still lives in Mongo (auditable), but the
+        next run with no explicit session_id starts a brand-new session, so
+        no flow/thread state carries over. Returns the ended session id, or
+        None if there was no active session.
+        """
+        ended = self._active_sessions.pop(workflow_id, None)
+        if ended is not None:
+            log.info("session ended workflow=%s session_id=%s", workflow_id, ended)
+        return ended
+
+    async def get_session_history(
+        self, workflow_id: str, session_id: str
+    ) -> list[dict[str, Any]]:
+        """The accumulated conversation history for a session.
+
+        Reads ``system.conversationHistory`` from the most recent run of the
+        (workflow_id, session_id) — the same list every node sees via
+        ``{{system.conversationHistory}}``.
+        """
+        if self._runs is None:
+            return []
+        prior = await self._runs.latest_for_session(workflow_id, session_id)
+        if prior is None:
+            return []
+        sysv = ((prior.get("state") or {}).get("variables") or {}).get("system") or {}
+        hist = sysv.get("conversationHistory")
+        return hist if isinstance(hist, list) else []
+
     # ----- internals ------------------------------------------------------
 
     async def _invoke_graph(
@@ -440,6 +525,11 @@ class RunManager:
 
         if status not in {"completed", "failed", "cancelled"}:
             status = "completed"
+        if status == "completed":
+            # Append this turn (user + assistant) to system.conversationHistory
+            # so the NEXT run in the same session — and every node in it —
+            # can read prior turns via {{system.conversationHistory}}.
+            _append_conversation_turn(final)
         if self._runs is not None:
             await self._runs.update_state(
                 run_id,
@@ -504,6 +594,7 @@ class RunManager:
                 workflow_id=sub_workflow_id,
                 input=inputs,
                 parent_run_id=parent_run_id,
+                implicit_session=False,  # sub-flows never join a chat session
                 depth=new_depth,
             )
             final = await manager.start_run(
@@ -549,6 +640,55 @@ def _sanitize_for_persistence(v: Any) -> Any:
     if isinstance(v, (str, int, float, bool)):
         return v
     return str(v)
+
+
+_MAX_CONVERSATION_TURNS = 100  # cap stored history (200 messages) to bound size
+
+
+def _append_conversation_turn(final: dict[str, Any]) -> None:
+    """Append this run's user + assistant messages to system.conversationHistory.
+
+    Mutates ``final`` in place (before it's persisted). The history is a list
+    of ``{role, content}`` dicts — readable from every node in subsequent runs
+    via ``{{system.conversationHistory}}``. The newest run's input is the
+    "user" turn; its ``final_output`` is the "assistant" turn. The list is
+    trimmed to the most recent ``_MAX_CONVERSATION_TURNS`` exchanges.
+    """
+    if not isinstance(final, dict):
+        return
+    variables = final.setdefault("variables", {})
+    system = variables.setdefault("system", {})
+
+    history = system.get("conversationHistory")
+    if not isinstance(history, list):
+        history = []
+
+    user_text = system.get("userQuery")
+    if user_text not in (None, ""):
+        history.append({"role": "user", "content": user_text})
+
+    answer = final.get("final_output")
+    if isinstance(answer, dict):
+        # Prefer a human-ish field if the workflow produced one.
+        answer = (
+            answer.get("answer")
+            or answer.get("content")
+            or answer.get("reply")
+            or answer
+        )
+    if answer not in (None, ""):
+        if not isinstance(answer, str):
+            try:
+                answer = json.dumps(answer, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                answer = str(answer)
+        history.append({"role": "assistant", "content": answer})
+
+    # Trim to the last N turns (2 messages per turn).
+    max_msgs = _MAX_CONVERSATION_TURNS * 2
+    if len(history) > max_msgs:
+        history = history[-max_msgs:]
+    system["conversationHistory"] = history
 
 
 def _resolve_resume_status(final: Any) -> str:

@@ -71,7 +71,11 @@ async def create_and_start(workflow_id: str, body: StartRunBody, request: Reques
         initial_state=run["state"],
         wait=False,
     )
-    return {"run_id": run["run_id"], "status": "running"}
+    return {
+        "run_id": run["run_id"],
+        "status": "running",
+        "session_id": run.get("session_id"),
+    }
 
 
 @router.post("/api/workflows/run-inline")
@@ -93,13 +97,59 @@ async def run_inline(body: InlineRunBody, request: Request) -> dict[str, Any]:
         return {
             "run_id": run["run_id"],
             "status": _resolve_status(final),
+            "session_id": run.get("session_id"),
             "final_output": final.get("final_output") if isinstance(final, dict) else None,
             "pause": _extract_pause(final) if isinstance(final, dict) else None,
         }
     await rm.start_run(
         run["run_id"], definition=run["definition"], initial_state=run["state"], wait=False
     )
-    return {"run_id": run["run_id"], "status": "running"}
+    return {
+        "run_id": run["run_id"],
+        "status": "running",
+        "session_id": run.get("session_id"),
+    }
+
+
+@router.get("/api/workflows/{workflow_id}/session")
+async def get_active_session(workflow_id: str, request: Request) -> dict[str, Any]:
+    """The current backend-managed session id for a workflow (or null)."""
+    rm = _manager(request)
+    return {"workflow_id": workflow_id, "session_id": rm.active_session(workflow_id)}
+
+
+@router.post("/api/workflows/{workflow_id}/end-session")
+async def end_session(workflow_id: str, request: Request) -> dict[str, Any]:
+    """The stop signal — rotate the conversation.
+
+    Clears the active backend-managed session for this workflow. The next run
+    (with no explicit session_id) starts a fresh session, so no flow/thread
+    state carries over. Prior conversation state remains in Mongo for audit.
+    """
+    rm = _manager(request)
+    ended = rm.end_session(workflow_id)
+    return {"workflow_id": workflow_id, "ended_session_id": ended, "stopped": ended is not None}
+
+
+@router.get("/api/workflows/{workflow_id}/history")
+async def get_session_history(
+    workflow_id: str,
+    request: Request,
+    session_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """The accumulated chat history for a conversation.
+
+    Pass ``?session_id=...`` to target a specific conversation. If omitted,
+    falls back to the workflow's active backend-managed session (legacy mode).
+    Returns ``[{role, content}, ...]`` — exactly what nodes see via
+    ``{{system.conversationHistory}}``.
+    """
+    rm = _manager(request)
+    sid = session_id or rm.active_session(workflow_id)
+    if not sid:
+        return {"workflow_id": workflow_id, "session_id": None, "history": []}
+    history = await rm.get_session_history(workflow_id, sid)
+    return {"workflow_id": workflow_id, "session_id": sid, "history": history}
 
 
 @router.get("/api/runs/{run_id}")
